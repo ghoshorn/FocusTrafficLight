@@ -13,13 +13,17 @@ private typealias CopySpacesForWindowFunc = @convention(c) (Int, Int) -> Unmanag
 final class FocusRecoveryEngine {
 
     private let accessibilityHelper: AccessibilityHelper
+    private var lastPermissionWarnAt: TimeInterval = 0
 
     init(accessibilityHelper: AccessibilityHelper) {
         self.accessibilityHelper = accessibilityHelper
     }
 
     func performRecoveryCheck(context: FocusTriggerContext) {
-        guard accessibilityHelper.checkAccessibilityPermission() else { return }
+        guard accessibilityHelper.checkAccessibilityPermission() else {
+            warnPermissionMissingIfNeeded()
+            return
+        }
 
         AppLogger.info(
             "Focus check triggered by \(context.kind.rawValue) — source PID=\(context.sourcePID) window=\(context.targetWindowID.map(String.init) ?? "?")"
@@ -43,6 +47,20 @@ final class FocusRecoveryEngine {
 
         AppLogger.info("Focusing: \(app.localizedName ?? "?")")
         performFocus(app: app)
+    }
+
+    /// Without the Accessibility grant nothing works, but on recent macOS the
+    /// process is only re-approved for the exact binary path — an update or a
+    /// rebuilt bundle silently loses previous trust. Surface that instead of
+    /// failing quietly.
+    private func warnPermissionMissingIfNeeded() {
+        let now = Date().timeIntervalSince1970
+        guard now - lastPermissionWarnAt >= 10 else { return }
+        lastPermissionWarnAt = now
+        AppLogger.info(
+            "Accessibility permission missing — focus recovery disabled. " +
+            "Grant it in System Settings > Privacy & Security > Accessibility and restart the app."
+        )
     }
 
     // MARK: - Checking the Triggered Window Left the Screen
@@ -103,11 +121,36 @@ final class FocusRecoveryEngine {
     // MARK: - Focus Transfer
 
     private func performFocus(app: NSRunningApplication) {
-        app.activate(options: [.activateIgnoringOtherApps])
+        // Direct activation is unreliable across recent macOS releases:
+        // `.activateIgnoringOtherApps` is a deprecated no-op since macOS 14
+        // and modern `activate` calls from an LSUIElement app are routinely
+        // rejected by macOS 26. Ask the target app to activate itself, which
+        // macOS honours.
+        let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        app.activate()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            let currentPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            let focusLanded = currentPID == app.processIdentifier ||
+                (currentPID != frontmostPID && currentPID != ProcessInfo.processInfo.processIdentifier)
+            if focusLanded { return }
+
+            AppLogger.info("Activation did not land, retrying via AppleScript")
+            var errorInfo: NSDictionary?
+            let source = "tell application id \"\(app.processIdentifier)\" to activate"
+            _ = NSAppleScript(source: source)?.executeAndReturnError(&errorInfo)
+            if let errorInfo = errorInfo {
+                AppLogger.info("AppleScript activation failed: \(errorInfo)")
+            }
+        }
     }
 
     // MARK: - Space / CGWindow Helpers
 
+    /// Cross-space filtering relies on private CoreGraphics symbols that are
+    /// removed on macOS 26; all guarded nil paths below fail open (the window
+    /// is treated as being in the current space), so the guard silently
+    /// degrades instead of breaking focus recovery.
     private func getCurrentSpaceID() -> Int? {
         guard let handle = dlopen("/System/Library/Frameworks/CoreGraphics.framework/Versions/Current/CoreGraphics", RTLD_NOW) else {
             return nil

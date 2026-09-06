@@ -14,7 +14,7 @@ A macOS menu bar app that automatically manages window focus recovery.
 
 ## Requirements
 
-- macOS (tested on macOS 15, others untested)
+- macOS (tested on macOS 15; macOS 26 verified after v4.0.6 — focus activation and silent-hide recovery work there)
 - Accessibility permission required
 
 ## Installation

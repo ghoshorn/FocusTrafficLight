@@ -41,6 +41,15 @@ final class FocusEventMonitor {
     private var mouseTapThread: Thread?
     private var isMonitoring = false
 
+    // Background poller for "silent hide": some apps (WeChat's F1 toggle, QQ,
+    // custom close-panel shortcuts) OrderOut their windows without posting any
+    // AX notification — there is no AX event we can listen for. Poll
+    // CGWindowList to notice that the frontmost app has suddenly lost all of
+    // its visible windows and recover focus.
+    private var hidePollTimer: Timer?
+    private var lastFrontVisibleWindowCount: [pid_t: Int] = [:]
+    private var lastHiddenRecoveryAt: TimeInterval = 0
+
     private var observers: [pid_t: (observer: AXObserver, runLoopSource: CFRunLoopSource, retainedSelf: UnsafeMutableRawPointer)] = [:]
     private var lastCmdHAt: TimeInterval = 0
 
@@ -75,7 +84,9 @@ final class FocusEventMonitor {
             object: nil
         )
 
-        AppLogger.info("Focus event sources started (Cmd+W / Cmd+M / traffic lights / app hide)")
+        startHidePolling()
+
+        AppLogger.info("Focus event sources started (Cmd+W / Cmd+M / traffic lights / app hide / silent hide)")
     }
 
     func stopMonitoring() {
@@ -83,6 +94,7 @@ final class FocusEventMonitor {
         isMonitoring = false
 
         NSWorkspace.shared.notificationCenter.removeObserver(self)
+        stopHidePolling()
         removeAllObservers()
         stopMouseEventTap()
 
@@ -325,6 +337,107 @@ final class FocusEventMonitor {
         }
         removeObserver(for: app.processIdentifier)
     }
+
+    // MARK: - Silent Hide Detection (WeChat / QQ custom hide shortcuts)
+
+    /// Some apps (WeChat's F1 show/hide toggle, QQ quick-hide, similar
+    /// app-specific shortcuts) just `orderOut:` their windows. The app is
+    /// neither `.hidden` nor minimized — its visible windows are only gone —
+    /// and no AX notification is posted for that, so macOS never moves focus
+    /// and the frontmost slot stays dead until the user clicks something.
+    /// Poll CGWindowList to catch the visible-window-count being yanked to
+    /// zero and synthesize a "Window Hidden" trigger.
+    private func startHidePolling() {
+        guard hidePollTimer == nil else { return }
+        hidePollTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
+            self?.pollFrontVisibleWindows()
+        }
+        // Timers need not be exact; tolerate slack so the system can coalesce
+        // us with other timers and save energy.
+        hidePollTimer?.tolerance = 0.06
+    }
+
+    private func stopHidePolling() {
+        hidePollTimer?.invalidate()
+        hidePollTimer = nil
+        lastFrontVisibleWindowCount.removeAll()
+    }
+
+    private func deviceLocked() -> Bool {
+        guard let dict = CGSessionCopyCurrentDictionary() as? [String: Any] else {
+            return false
+        }
+        return (dict["CGSSessionScreenIsLocked"] as? Int) == 1
+    }
+
+    private func pollFrontVisibleWindows() {
+        guard !deviceLocked() else {
+            lastFrontVisibleWindowCount.removeAll()
+            return
+        }
+
+        guard let front = NSWorkspace.shared.frontmostApplication,
+              front.activationPolicy == .regular,
+              !front.isHidden,
+              front.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+              front.bundleIdentifier != "com.apple.finder" else {
+            lastFrontVisibleWindowCount.removeAll()
+            return
+        }
+
+        let pid = front.processIdentifier
+        let count = visibleWindowCount(processID: pid)
+        let prev = lastFrontVisibleWindowCount[pid] ?? count
+        lastFrontVisibleWindowCount[pid] = count
+
+        // Only the 1->0 (or N->0 if the app only had one window) drop at the
+        // right moment is a silent hide; we are not interested in anything
+        // going back up (that is not a hide) and we do not want to re-fire.
+        guard prev > 0, count == 0 else { return }
+
+        let now = Date().timeIntervalSince1970
+        // Do not double-combat macOS's own Cmd+H transfer.
+        if now - lastCmdHAt < 0.5 { return }
+        // Status-item windows, panels without models, etc. can flap a
+        // transient 1->0; throttle any repeated "silent hide" recoveries.
+        if now - lastHiddenRecoveryAt < 0.8 { return }
+        // If a keyboard/mouse/AX trigger just fired, that path already covers
+        // this transition — do not stack a second recovery on top. Check this
+        // last: canTriggerNow() consumes a debounce slot as a side effect.
+        if !canTriggerNow() { return }
+
+        lastHiddenRecoveryAt = now
+        AppLogger.info(
+            "Silent-hide detected: \(front.localizedName ?? "?") PID=\(pid) windows \(prev)->0"
+        )
+        schedule(
+            FocusTriggerContext(
+                kind: .windowHidden,
+                sourcePID: pid,
+                targetWindowID: nil
+            )
+        )
+    }
+
+    private func visibleWindowCount(processID: pid_t) -> Int {
+        guard let list = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] else {
+            return -1
+        }
+        var count = 0
+        for cgWindow in list {
+            guard (cgWindow[kCGWindowLayer as String] as? Int) == 0,
+                  (cgWindow[kCGWindowOwnerPID as String] as? pid_t) == processID else {
+                continue
+            }
+            count += 1
+        }
+        return count
+    }
+
+    // MARK: - Per-app AX Observers
 
     private func observeApp(_ app: NSRunningApplication) {
         let pid = app.processIdentifier

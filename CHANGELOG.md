@@ -1,5 +1,19 @@
 # Changelog
 
+## v4.0.6 - 2026-09-05
+
+- 修复：WeChat / QQ 等应用的"显示/隐藏"切换（如 F1 快捷键）不触发焦点恢复
+- 这些应用只对窗口做 `orderOut:`，应用既未 `hidden` 也未最小化，且不发送任何 AX 通知——无事件可监听
+- 新增轻量级静默隐藏检测：每 150ms 观察前台应用，其可见窗口（layer 0，on-screen）从 N→0 时视为隐藏，触发焦点恢复
+- 与已有路径去重：与 Cmd+H、已触发的键盘/鼠标/AX 触发共享 0.2s 防抖窗口，另加 0.8s 静默隐藏冷却；Finder 与锁屏时跳过
+
+## v4.0.5 - 2026-09-05
+
+- 修复：macOS 14+ 无焦点恢复 — `app.activate(options: [.activateIgnoringOtherApps])` 早已被废弃，在 macOS 26 上是静默空操作
+- 焦点恢复现在先用现代 `activate()`，150ms 后验证焦点是否转移；未转移则回退到 AppleScript `tell application id "<pid>" to activate`，让目标应用自行激活
+- 辅助功能权限缺失不再静默放行，每 10 秒以内的触发只记录一次提示并告知在系统设置中授权
+- 记录：`CGSSpaceCopyCurrent` / `CGSCopySpacesForWindow` 私有符号在 macOS 26 已移除，空间过滤静默停用（fail-open，属预期）
+
 ## v4.0.4 - 2026-09-01
 
 - 修复：右键菜单、框选等临时 UI 消失被误判为应用隐藏，导致焦点被抢到其他窗口

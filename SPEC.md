@@ -51,6 +51,7 @@ Quit
 - Mouse event tap for real clicks on red close / yellow minimize buttons
 - AX notifications for apps with their own hide shortcuts (WeChat, QQ, Feishu...)
 - `Cmd+H` is suppressed so the system's own hide behavior is not doubled
+- Silent-hide poller: apps like WeChat (F1 show/hide hotkey) hide via an app-internal toggle that just orders the window out — the app is never hidden, and no AX notification is posted, so there is nothing to listen for. A 150ms repeat timer watches the frontmost app's visible-window count; the N→0 drop is treated as a "Window Hidden" trigger. Guarded by the same 0.2s debounce, a 0.8s silent-hide cooldown, the Cmd+H window, and the self/Finder/screen-locked skip rules. The timer keeps running while monitoring is enabled because no event announces these hide toggles
 
 #### 2. Trigger Recognition (Priority: Critical)
 - Keyboard and traffic light clicks capture the frontmost app and its target window at event time
