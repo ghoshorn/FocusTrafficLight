@@ -21,7 +21,10 @@ A macOS menu bar app that automatically manages window focus recovery.
 
 1. Download `Focus TrafficLight.zip`
 2. Extract and drag to Applications folder
-3. Grant Accessibility permission on first launch, **restart the app after granting permission**
+3. On first launch, **Control-click** the app, choose **Open**, then choose **Open** again in the security dialog. This is required because the app is not signed with an Apple Developer ID.
+4. Grant Accessibility permission, then **restart the app**.
+
+If macOS still blocks the app, open **System Settings → Privacy & Security** and select **Open Anyway** for Focus TrafficLight.
 
 ## Usage
 

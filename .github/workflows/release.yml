@@ -19,7 +19,7 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Build app
+      - name: Build unsigned app
         run: |
           xcodegen generate
           xcodebuild \
@@ -32,7 +32,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
-      - name: Package FocusTrafficLight.app
+      - name: Package unsigned FocusTrafficLight.app
         run: |
           APP_PATH=$(find build/DerivedData/Build/Products/Release -maxdepth 1 -name "*.app" | head -1)
           cp -R "$APP_PATH" .
